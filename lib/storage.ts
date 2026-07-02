@@ -11,7 +11,16 @@ export async function loadState(): Promise<PlanState | null> {
       .eq("id", STORAGE_KEY)
       .maybeSingle();
     if (error) throw error;
-    return (data?.state as PlanState) ?? null;
+    if (data?.state) return data.state as PlanState;
+    // One-time migration: if this browser has data from before Supabase
+    // was configured, seed the server with it instead of starting fresh.
+    const local = window.localStorage.getItem(STORAGE_KEY);
+    if (local) {
+      const state = JSON.parse(local) as PlanState;
+      await saveState(state);
+      return state;
+    }
+    return null;
   }
   const raw = window.localStorage.getItem(STORAGE_KEY);
   return raw ? (JSON.parse(raw) as PlanState) : null;
