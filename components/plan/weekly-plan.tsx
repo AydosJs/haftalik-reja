@@ -21,10 +21,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { brandOverlayTheme } from "@/lib/brand-theme";
 import { loadState, saveState } from "@/lib/storage";
 import { usingSupabase } from "@/lib/supabase";
 import { seedData, uid } from "@/lib/seed";
 import type { Member, PlanState } from "@/lib/types";
+import { PlanSkeleton } from "./plan-skeleton";
 import { PulseChart } from "./pulse-chart";
 import { ReportTable } from "./report-table";
 import { MemberCard } from "./member-card";
@@ -105,11 +107,7 @@ export default function WeeklyPlan() {
   );
 
   if (!state) {
-    return (
-      <div className="flex min-h-dvh items-center justify-center text-sm text-ink-400">
-        Yuklanmoqda…
-      </div>
-    );
+    return <PlanSkeleton />;
   }
 
   const week = state.weeks.find((w) => w.id === state.activeWeekId) ?? state.weeks[0];
@@ -276,21 +274,19 @@ export default function WeeklyPlan() {
         open={pendingDelete !== null}
         onOpenChange={(open) => !open && setPendingDelete(null)}
       >
-        <AlertDialogContent className="border-line bg-navy-800 text-ink-050">
+        <AlertDialogContent style={brandOverlayTheme} className="ring-line">
           <AlertDialogHeader>
             <AlertDialogTitle>
               {pendingDelete?.kind === "week"
                 ? `"${pendingDelete.label}" haftasini o'chirmoqchimisiz?`
                 : `${pendingDelete?.name ?? ""} ni jamoadan o'chirmoqchimisiz?`}
             </AlertDialogTitle>
-            <AlertDialogDescription className="text-ink-400">
+            <AlertDialogDescription>
               Bu amalni ortga qaytarib bo&apos;lmaydi.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="border-line bg-navy-700 text-ink-050 hover:bg-navy-600 hover:text-ink-050">
-              Bekor qilish
-            </AlertDialogCancel>
+            <AlertDialogCancel>Bekor qilish</AlertDialogCancel>
             <AlertDialogAction
               className="bg-coral-400 text-navy-950 hover:bg-coral-400/80"
               onClick={confirmDelete}
