@@ -19,3 +19,7 @@ create policy "public insert" on public.plans
 
 create policy "public update" on public.plans
   for update using (true);
+
+-- Enable Realtime so every open tab receives live updates when the plan
+-- changes, instead of holding a stale copy that overwrites others' edits.
+alter publication supabase_realtime add table public.plans;

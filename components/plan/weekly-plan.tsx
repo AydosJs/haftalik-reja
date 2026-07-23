@@ -22,8 +22,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { brandOverlayTheme } from "@/lib/brand-theme";
-import { loadState, saveState } from "@/lib/storage";
-import { usingSupabase } from "@/lib/supabase";
+import { loadState, saveState, PLAN_ID } from "@/lib/storage";
+import { supabase, usingSupabase } from "@/lib/supabase";
 import { seedData, uid } from "@/lib/seed";
 import type { Member, PlanState } from "@/lib/types";
 import { PlanSkeleton } from "./plan-skeleton";
@@ -34,6 +34,7 @@ import { MemberCard } from "./member-card";
 type PendingDelete =
   | { kind: "member"; memberId: string; name: string }
   | { kind: "week"; weekId: string; label: string }
+  | { kind: "task"; memberId: string; taskId: string; text: string }
   | null;
 
 function todayParts() {
@@ -44,35 +45,44 @@ function todayParts() {
   return { label: `${dd}.${mm}.${yyyy}`, iso: `${yyyy}-${mm}-${dd}` };
 }
 
+type LoadError = "config" | "load";
+
 export default function WeeklyPlan() {
   const [state, setState] = useState<PlanState | null>(null);
+  const [loadError, setLoadError] = useState<LoadError | null>(null);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null);
+  const [confirmAddWeek, setConfirmAddWeek] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // JSON of the last state we know the server holds — either what we loaded,
+  // what we just saved, or what arrived over Realtime. Used to (a) ignore the
+  // echo of our own writes and (b) decide when a remote change is genuinely new.
+  const serverStateRef = useRef<string>("");
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      // Without a configured server there is nowhere safe to save. Show an
+      // error instead of silently falling back to a per-browser copy.
+      if (!usingSupabase) {
+        if (!cancelled) setLoadError("config");
+        return;
+      }
       try {
         let s = await loadState();
+        // Only seed when the server genuinely has no plan yet (first run).
+        // On a load *error* we never show seed data, because editing it would
+        // overwrite the real plan on the server.
         if (!s) {
           s = seedData();
           await saveState(s);
         }
         if (!cancelled) {
+          serverStateRef.current = JSON.stringify(s);
           setState(s);
-          if (!usingSupabase) {
-            toast.warning(
-              "Ma'lumotlar faqat shu brauzerda saqlanmoqda. Jamoa bilan ulashish uchun Supabase ni sozlang (README ga qarang).",
-              { duration: 6000 }
-            );
-          }
         }
       } catch (e) {
         console.error("Storage error", e);
-        if (!cancelled) {
-          toast.error("Ma'lumotni yuklab bo'lmadi — Supabase sozlamalarini tekshiring");
-          setState(seedData());
-        }
+        if (!cancelled) setLoadError("load");
       }
     })();
     return () => {
@@ -80,11 +90,51 @@ export default function WeeklyPlan() {
     };
   }, []);
 
+  // Live sync: subscribe to changes on the shared row so every open tab stays
+  // current. Without this, a tab left open for hours holds a stale copy and its
+  // next save silently overwrites everyone else's edits.
+  useEffect(() => {
+    const client = supabase;
+    if (!client) return;
+    const channel = client
+      .channel("plan-sync")
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "plans",
+          filter: `id=eq.${PLAN_ID}`,
+        },
+        (payload) => {
+          const incoming = (payload.new as { state?: PlanState }).state;
+          if (!incoming) return;
+          const incomingStr = JSON.stringify(incoming);
+          // Ignore the echo of our own save, or an identical no-op update.
+          if (incomingStr === serverStateRef.current) return;
+          // Don't clobber an edit the user is in the middle of making; our own
+          // pending save will land in a moment. Only adopt remote state when we
+          // have nothing unsaved.
+          if (saveTimer.current) return;
+          serverStateRef.current = incomingStr;
+          setState(incoming);
+          toast("Reja boshqa a'zo tomonidan yangilandi", { duration: 2200 });
+        }
+      )
+      .subscribe();
+    return () => {
+      client.removeChannel(channel);
+    };
+  }, []);
+
   const scheduleSave = useCallback((next: PlanState) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
+      saveTimer.current = null;
       try {
         await saveState(next);
+        // Record what the server now holds so the Realtime echo is ignored.
+        serverStateRef.current = JSON.stringify(next);
         toast("Saqlandi", { duration: 1400 });
       } catch (e) {
         console.error("Storage error", e);
@@ -105,6 +155,30 @@ export default function WeeklyPlan() {
     },
     [scheduleSave]
   );
+
+  if (loadError) {
+    const message =
+      loadError === "config"
+        ? "Server (Supabase) sozlanmagan. NEXT_PUBLIC_SUPABASE_URL va NEXT_PUBLIC_SUPABASE_ANON_KEY o'rnatilishi kerak."
+        : "Ma'lumotni serverdan yuklab bo'lmadi. Internet aloqasini yoki Supabase loyihasini (to'xtatilgan bo'lishi mumkin) tekshiring va qayta urinib ko'ring.";
+    return (
+      <div className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 px-4 text-center">
+        <div className="text-xs font-semibold uppercase tracking-widest text-gold-400">
+          Registon LC · Rekruting jamoasi
+        </div>
+        <h1 className="font-display text-3xl font-semibold">
+          Ma&apos;lumotni yuklab bo&apos;lmadi
+        </h1>
+        <p className="text-sm text-ink-400">{message}</p>
+        <Button
+          className="rounded-lg bg-gradient-to-br from-gold-400 to-gold-500 px-4 font-bold text-navy-950 hover:from-gold-300 hover:to-gold-400"
+          onClick={() => window.location.reload()}
+        >
+          Qayta urinish
+        </Button>
+      </div>
+    );
+  }
 
   if (!state) {
     return <PlanSkeleton />;
@@ -159,6 +233,13 @@ export default function WeeklyPlan() {
         const wk = s.weeks.find((w) => w.id === week.id);
         if (wk) wk.members = wk.members.filter((m) => m.id !== memberId);
       });
+    } else if (pendingDelete.kind === "task") {
+      const { memberId, taskId } = pendingDelete;
+      mutate((s) => {
+        const wk = s.weeks.find((w) => w.id === week.id);
+        const m = wk?.members.find((x) => x.id === memberId);
+        if (m) m.tasks = m.tasks.filter((t) => t.id !== taskId);
+      });
     } else {
       const { weekId } = pendingDelete;
       mutate((s) => {
@@ -181,21 +262,6 @@ export default function WeeklyPlan() {
           </h1>
           <div className="mt-1 text-xs text-ink-400 sm:text-sm">
             {week.startLabel} kunidan boshlangan haftalik reja
-          </div>
-          <div
-            className={`mt-2.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${
-              usingSupabase ? "bg-teal-500/15 text-teal-400" : "bg-gold-400/15 text-gold-400"
-            }`}
-            title={
-              usingSupabase
-                ? "Ma'lumotlar Supabase serverida saqlanadi va jamoa bilan ulashiladi"
-                : "Supabase sozlanmagan — ma'lumotlar faqat shu brauzerning xotirasida turadi"
-            }
-          >
-            <span className="size-1.5 rounded-full bg-current" />
-            {usingSupabase
-              ? "Serverda saqlanmoqda (Supabase)"
-              : "Faqat shu brauzerda saqlanmoqda"}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -233,7 +299,7 @@ export default function WeeklyPlan() {
           </div>
           <Button
             className="rounded-lg bg-gradient-to-br from-gold-400 to-gold-500 px-4 font-bold text-navy-950 hover:from-gold-300 hover:to-gold-400"
-            onClick={addWeek}
+            onClick={() => setConfirmAddWeek(true)}
           >
             + Yangi hafta
           </Button>
@@ -251,6 +317,9 @@ export default function WeeklyPlan() {
             onDeleteRequest={() =>
               setPendingDelete({ kind: "member", memberId: m.id, name: m.name })
             }
+            onTaskDeleteRequest={(taskId, text) =>
+              setPendingDelete({ kind: "task", memberId: m.id, taskId, text })
+            }
           />
         ))}
         <button
@@ -264,11 +333,31 @@ export default function WeeklyPlan() {
 
       <ReportTable week={week} />
 
-      <div className="mt-8 text-center text-xs tracking-wide text-ink-600">
-        {usingSupabase
-          ? "Barcha o'zgarishlar avtomatik serverga saqlanadi va havolaga ega jamoa a'zolariga ko'rinadi."
-          : "Barcha o'zgarishlar avtomatik saqlanadi — hozircha faqat shu brauzerda. Jamoa bilan ulashish uchun Supabase ni sozlang."}
-      </div>
+      <AlertDialog
+        open={confirmAddWeek}
+        onOpenChange={setConfirmAddWeek}
+      >
+        <AlertDialogContent style={brandOverlayTheme} className="ring-line">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Yangi hafta ochilsinmi?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Yangi bo&apos;sh hafta ochiladi va u barcha jamoa a&apos;zolariga
+              ko&apos;rsatiladi. Oldingi haftalar va ulardagi vazifalar
+              o&apos;chirilmaydi — ular yuqoridagi ro&apos;yxatdan tanlab
+              ko&apos;riladi.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Bekor qilish</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-gradient-to-br from-gold-400 to-gold-500 text-navy-950 hover:from-gold-300 hover:to-gold-400"
+              onClick={addWeek}
+            >
+              Ha, yangi hafta ochish
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={pendingDelete !== null}
@@ -279,7 +368,9 @@ export default function WeeklyPlan() {
             <AlertDialogTitle>
               {pendingDelete?.kind === "week"
                 ? `"${pendingDelete.label}" haftasini o'chirmoqchimisiz?`
-                : `${pendingDelete?.name ?? ""} ni jamoadan o'chirmoqchimisiz?`}
+                : pendingDelete?.kind === "task"
+                  ? `Bu vazifani o'chirmoqchimisiz?`
+                  : `${pendingDelete?.name ?? ""} ni jamoadan o'chirmoqchimisiz?`}
             </AlertDialogTitle>
             <AlertDialogDescription>
               Bu amalni ortga qaytarib bo&apos;lmaydi.

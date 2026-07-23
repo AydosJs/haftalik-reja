@@ -13,9 +13,15 @@ interface MemberCardProps {
   member: Member;
   onUpdate: (recipe: (m: Member) => void) => void;
   onDeleteRequest: () => void;
+  onTaskDeleteRequest: (taskId: string, text: string) => void;
 }
 
-export function MemberCard({ member, onUpdate, onDeleteRequest }: MemberCardProps) {
+export function MemberCard({
+  member,
+  onUpdate,
+  onDeleteRequest,
+  onTaskDeleteRequest,
+}: MemberCardProps) {
   const [focusTaskId, setFocusTaskId] = useState<string | null>(null);
   const pct = memberPct(member);
 
@@ -115,9 +121,7 @@ export function MemberCard({ member, onUpdate, onDeleteRequest }: MemberCardProp
               <button
                 className="shrink-0 rounded-sm p-0.5 text-ink-600 transition-colors hover:text-coral-400"
                 title="Vazifani o'chirish"
-                onClick={() =>
-                  onUpdate((m) => void (m.tasks = m.tasks.filter((x) => x.id !== t.id)))
-                }
+                onClick={() => onTaskDeleteRequest(t.id, t.text)}
               >
                 <X className="size-4" />
               </button>
